@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guitar Note Practice</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            text-align: center;
+            background: #f5f5f5;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        #note { font-size: 2em; margin: 20px 0; color: #007aff; }
+        #feedback { font-size: 1.2em; margin: 20px 0; color: #28a745; }
+        #stats { font-size: 1em; margin: 20px 0; }
+        button {
+            background-color: #007aff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 1em;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px;
+            transition: background-color 0.3s;
+        }
+        button:hover { background-color: #005bb5; }
+        table {
+            margin: 20px 0;
+            width: 80%;
+            max-width: 600px;
+            border-collapse: collapse;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-radius: 5px;
+        }
+        th, td { padding: 10px; border: 1px solid #e0e0e0; text-align: center; }
+        th { background: #f0f0f0; }
+        label { margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Guitar Note Practice</h1>
+    <div>
+        <button id="startButton">Start Recognition</button>
+        <button id="stopButton" style="display:none;">Stop</button>
+        <label>
+            <input type="checkbox" id="naturalNotesOnly"> Only Natural Notes
+        </label>
+    </div>
+    <div id="note">Note: </div>
+    <div id="feedback"></div>
+    <div id="stats">
+        <div>Time: <span id="timer">0</span> seconds</div>
+        <div>Correct: <span id="correctCount">0</span></div>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Note</th>
+                <th>C</th>
+                <th>D</th>
+                <th>E</th>
+                <th>F</th>
+                <th>G</th>
+                <th>A</th>
+                <th>B</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr id="averageTimes">
+                <td>Average Time (s)</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>0.00</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <script>
+        const allNotes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        const naturalNotes = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+        let currentNote, audioContext, analyser, bufferLength, dataArray, timerInterval, noteStartTime;
+        let correctCount = 0, startTime, isRunning = false, noteTimes = {};
+
+        document.getElementById('startButton').onclick = startRecognition;
+        document.getElementById('stopButton').onclick = stopRecognition;
+
+        function startRecognition() {
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                source.connect(analyser);
+                analyser.fftSize = 2048;
+                bufferLength = analyser.fftSize;
+                dataArray = new Uint8Array(bufferLength);
+                resetStats();
+                generateNewNote();
+                isRunning = true;
+                analyzePitch();
+                startTimer();
+                document.getElementById('startButton').style.display = 'none';
+                document.getElementById('stopButton').style.display = 'inline';
+            }).catch(err => console.error('Error accessing audio input:', err));
+        }
+
+        function stopRecognition() {
+            isRunning = false;
+            clearInterval(timerInterval);
+            document.getElementById('startButton').style.display = 'inline';
+            document.getElementById('stopButton').style.display = 'none';
+            document.getElementById('feedback').textContent = 'Session ended.';
+            updateAverageTimes();
+        }
+
+        function getRandomNote() {
+            const naturalNotesOnly = document.getElementById('naturalNotesOnly').checked;
+            const notes = naturalNotesOnly ? naturalNotes : allNotes;
+            return notes[Math.floor(Math.random() * notes.length)];
+        }
+
+        function generateNewNote() {
+            if (noteStartTime) {
+                const duration = (Date.now() - noteStartTime) / 1000;
+                noteTimes[currentNote] = (noteTimes[currentNote] || []).concat(duration);
+            }
+            currentNote = getRandomNote();
+            document.getElementById('note').textContent = `Note: ${currentNote}`;
+            document.getElementById('feedback').textContent = 'Play this note on your guitar.';
+            noteStartTime = Date.now();
+        }
+
+        function analyzePitch() {
+            if (!isRunning) return;
+            analyser.getByteTimeDomainData(dataArray);
+            const pitch = autoCorrelate(dataArray, audioContext.sampleRate);
+            if (pitch !== -1) {
+                const detectedNote = getNoteFromPitch(pitch);
+                console.log(`Detected pitch: ${pitch}, Detected note: ${detectedNote}`);
+                if (detectedNote === currentNote) {
+                    document.getElementById('feedback').textContent = 'Correct!';
+                    document.getElementById('correctCount').textContent = ++correctCount;
+                    generateNewNote();
+                } else {
+                    document.getElementById('feedback').textContent = `Detected: ${detectedNote}`;
+                }
+            }
+            requestAnimationFrame(analyzePitch);
+        }
+
+        function autoCorrelate(buf, sampleRate) {
+            let SIZE = buf.length;
+            let MAX_SAMPLES = Math.floor(SIZE / 2);
+            let bestOffset = -1;
+            let bestCorrelation = 0;
+            let rms = 0;
+
+            for (let i = 0; i < SIZE; i++) {
+                let val = (buf[i] - 128) / 128;
+                rms += val * val;
+            }
+            rms = Math.sqrt(rms / SIZE);
+            if (rms < 0.01) return -1;
+
+            let lastCorrelation = 1;
+            for (let offset = 0; offset < MAX_SAMPLES; offset++) {
+                let correlation = 0;
+                for (let i = 0; i < MAX_SAMPLES; i++) {
+                    correlation += ((buf[i] - 128) / 128) * ((buf[i + offset] - 128) / 128);
+                }
+                correlation = correlation / MAX_SAMPLES;
+                if (correlation > lastCorrelation && correlation > bestCorrelation) {
+                    bestCorrelation = correlation;
+                    bestOffset = offset;
+                }
+                lastCorrelation = correlation;
+            }
+            if (bestCorrelation > 0.01) {
+                return sampleRate / bestOffset;
+            }
+            return -1;
+        }
+
+        function getNoteFromPitch(pitch) {
+            const noteStrings = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+            const noteNum = 12 * (Math.log(pitch / 440) / Math.log(2)) + 69;
+            const noteIndex = Math.round(noteNum) % 12;
+            console.log(`Pitch: ${pitch}, Note Number: ${noteNum}, Note Index: ${noteIndex}`);
+            return noteStrings[noteIndex];
+        }
+
+        function startTimer() {
+            startTime = Date.now();
+            timerInterval = setInterval(() => document.getElementById('timer').textContent = Math.floor((Date.now() - startTime) / 1000), 1000);
+        }
+
+        function resetStats() {
+            correctCount = 0;
+            noteTimes = {};
+            document.getElementById('correctCount').textContent = correctCount;
+            document.getElementById('timer').textContent = '0';
+            clearInterval(timerInterval);
+updateAverageTimes();
+}    function updateAverageTimes() {
+        const avgTimes = document.getElementById('averageTimes').children;
+        for (let i = 1; i < avgTimes.length; i++) {
+            const note = naturalNotes[i - 1];
+            const times = noteTimes[note] || [];
+            const avgTime = times.reduce((sum, time) => sum + time, 0) / times.length || 0;
+            avgTimes[i].textContent = avgTime.toFixed(2);
+        }
+    }
+
+    window.onload = () => updateAverageTimes();
+</script>
+</body>
+</html>
+
